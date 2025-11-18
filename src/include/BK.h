@@ -169,7 +169,7 @@ namespace BK{
     double rcKSmallest(double r, double rp, double phi, BKParameters &BKP){
         double xdotz=r*rp*cos(phi) ;
         double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double alphaS_smallest=alphaS(std::min({r, rp, x2}),BKP);
+        double alphaS_smallest=alphaS(std::min(r, std::min(rp, x2)),BKP);
         double kernel_sum = pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp),2.0);
         kernel_sum +=  pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2),2.0);
         kernel_sum +=  2*( BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp)  ) * (BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2)) * (xdotz-rp*rp)/(rp*x2); 
