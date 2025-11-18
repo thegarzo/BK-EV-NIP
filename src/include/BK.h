@@ -11,6 +11,7 @@
 #include <gsl/gsl_errno.h>
 #include <gsl/gsl_sf_bessel.h>
 #include <gsl/gsl_integration.h>
+#include <filesystem>
 
 #include "params.h"
 #include "output.h"
