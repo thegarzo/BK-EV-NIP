@@ -124,6 +124,7 @@ namespace BK{
     double BKClipTol=1e-25;
 
     bool no_handlebars=true;
+    bool Verbose = true;
 
     double getY(int iY){return iY*dY;}
 
@@ -520,7 +521,7 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
                     dipole_f << Ti << "\t"<< Y << "\t" <<  SF->r_at(ir) << "\t" << SF->S_at(ir)<< "\t" << SA->S_at(ir) <<std::endl ;
                 }
                 // Now some output
-                if (iY%2 ==0){   
+                if (Verbose && iY%2 ==0){   
                     double percentage_done1 = double(iT)/double(grid.getNT());
                     double percentage_done2 = double(iY)/double(grid.getNY());
                     Output::printProgress2(percentage_done1,percentage_done2);
