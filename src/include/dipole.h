@@ -8,16 +8,27 @@
 #include <fstream>
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_errno.h>
+#include <gsl/gsl_sf_bessel.h>
 
 #include "params.h"
+
+// Initial-condition type:
+//   MVLog : MV model with logarithm, (r^2 Qs0^2)^gamma/4 ln(1/(r Lambda) + ec e)   [PRD 88, 114020]
+//   MVReg : MV model with IR regulator m, (2 pi kappa T/m^2) [1 - m r K1(m r)]     [PRD 111, 054033, Eq. (8)]
+enum class ICType : int { MVLog = 0, MVReg = 1 };
+
 struct MV_parameters
-{ 
+{
     double Qs02;
     double gamma;
     double Lambda;
     double T;
     double sigma0;
     double ec;
+    // MVReg parameters
+    ICType IC = ICType::MVLog;
+    double kappa = 0.0;
+    double m_IC  = 0.0;   // IR regulator of the IC, in fm^-1
 };
 
 class Dipole {
@@ -105,11 +116,17 @@ private:
     void free_gsl() noexcept;
 
     // Tools 
+    double MVReg_exponent(double r, MV_parameters &pars){
+        double x = pars.m_IC*r;
+        return 2*M_PI*pars.kappa*pars.T/(pars.m_IC*pars.m_IC) * (1.0 - x*gsl_sf_bessel_K1(x));
+    }
     double MV_Dipole(double r, MV_parameters &pars){
+        if (pars.IC == ICType::MVReg) return exp(-MVReg_exponent(r, pars));
         double exponent = 0.25*pow( r*r * pars.Qs02 , pars.gamma)  * log( pow(r*pars.Lambda, -1) +  E1*pars.ec ) ; 
         return exp( - (pars.sigma0 * pars.T)* exponent);
     }
     double MVA_Dipole(double r, MV_parameters &pars){
+        if (pars.IC == ICType::MVReg) return exp(-(CA/CF)*MVReg_exponent(r, pars));
         double exponent = 0.25*pow( r*r * pars.Qs02 , pars.gamma)  * log( pow(r*pars.Lambda, -1) +  E1*pars.ec ) ; 
         return exp( - (CA/CF)*(pars.sigma0 * pars.T)* exponent);
     }

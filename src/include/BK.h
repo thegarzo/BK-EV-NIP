@@ -7,6 +7,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_errno.h>
 #include <gsl/gsl_sf_bessel.h>
@@ -17,6 +18,12 @@
 #include "output.h"
 
 enum class KernelType : int { LO = 0,  rcParent =1,  rcDaughter =2,  rcBalitsky =3,  rcSmallest =4};
+// Smooth: alpha_s with (mu0, zeta) IR regularisation                         [PRD 111, 054033, Eq. (24)]
+// Frozen: 4pi/(beta0 ln(4C^2/(r^2 Lambda^2))), frozen at alpha_freeze          [PRD 88, 114020, Eq. (7)]
+enum class CouplingType : int { Smooth = 0, Frozen = 1 };
+// Casimir: SA = SF^(CA/CF)  (exact for a Gaussian, finite Nc)
+// Squared: SA = SF^2        (large Nc, N_A = 2N - N^2)                       [PRD 88, 114020]
+enum class AdjointType : int { Casimir = 0, Squared = 1 };
 
 
 struct BKParameters
@@ -26,8 +33,11 @@ struct BKParameters
     double mu2;
     double C2;
     double zeta;
-    double mp;
+    double mp;              // IR regulator of the kernel; mp = 0 gives the massless kernel
     KernelType KType;
+    CouplingType aSType = CouplingType::Smooth;
+    double alpha_freeze = 0.7;   // only used with CouplingType::Frozen
+    AdjointType Adjoint = AdjointType::Casimir;
     //Dipole values
     double r;
     Dipole * Dip;
@@ -40,6 +50,11 @@ namespace BKAux{
     BKParameters BK_MV;
     BKParameters BK_MVg;
     BKParameters BK_MVe;
+    MV_parameters MVRegPars;
+    BKParameters BK_MVReg;
+    BKParameters BK_MV_Fit;
+    BKParameters BK_MVg_Fit;
+    BKParameters BK_MVe_Fit;
 
     // These functions fill in the parameters obtained in PHYSICAL REVIEW D 88, 114020 (2013)
     void fill_in_MV(){
@@ -101,11 +116,51 @@ namespace BKAux{
         //Dipole values
         BK_MVg.r = 0.2;
     };
+    // MV with IR regulator, parameters from PHYSICAL REVIEW D 111, 054033 (2025), Eqs. (8), (10), (13) and Sec. III B
+    void fill_in_MVReg(){
+        MVRegPars.IC = ICType::MVReg;
+        MVRegPars.kappa = 0.66;
+        MVRegPars.m_IC = 0.4*GeV_to_fmm1;
+        MVRegPars.T = 1./(2*M_PI*3.0*GeVm2_to_fm2);   // proton centre, Gaussian with Bp = 3 GeV^-2
+        // Not used by the MVReg IC, set for config output only
+        MVRegPars.Qs02 = 0.0;
+        MVRegPars.gamma = 1.0;
+        MVRegPars.Lambda = 0.025*GeV_to_fmm1;
+        MVRegPars.sigma0 = 0.0;
+        MVRegPars.ec = 1.0;
+        // Kernel values
+        BK_MVReg.Lambda = 0.025*GeV_to_fmm1;
+        BK_MVReg.mu2 = pow(0.28*GeV_to_fmm1,2.0);
+        BK_MVReg.C2 = 1.0;
+        BK_MVReg.zeta= 0.2;
+        BK_MVReg.mp = 0.4*GeV_to_fmm1;
+        BK_MVReg.KType = KernelType::rcDaughter;
+        //Dipole values
+        BK_MVReg.r = 0.2;
+    };
+
+    // Evolution exactly as used in the fits of PHYSICAL REVIEW D 88, 114020 (2013):
+    // massless kernel, Balitsky prescription, alpha_s of Eq. (7) frozen at 0.7, SA = SF^2.
+    // Same C2 and Lambda as BK_MV, BK_MVg, BK_MVe; use with MVPars, MVgPars, MVePars.
+    void set_fit_evolution(BKParameters &BKP){
+        BKP.mp = 0.0;
+        BKP.KType = KernelType::rcBalitsky;
+        BKP.aSType = CouplingType::Frozen;
+        BKP.alpha_freeze = 0.7;
+        BKP.Adjoint = AdjointType::Squared;
+    };
+    void fill_in_Fit(){
+        BK_MV_Fit = BK_MV;   set_fit_evolution(BK_MV_Fit);
+        BK_MVg_Fit = BK_MVg; set_fit_evolution(BK_MVg_Fit);
+        BK_MVe_Fit = BK_MVe; set_fit_evolution(BK_MVe_Fit);
+    };
 
     void fill_in_all(){
         fill_in_MV();
         fill_in_MVe();
         fill_in_MVg();
+        fill_in_MVReg();
+        fill_in_Fit();   // after fill_in_MV/MVg/MVe, copies their C2 and Lambda
     };
 }
 
@@ -116,9 +171,9 @@ namespace BK{
     double wGC= 2*M_PI/nGC;
     double dY=0.1;
 
-    double BKEpsAbs=0.0;
+    double BKEpsAbs=1e-12;   // absolute floor so a near-zero RHS (S≈0 region) can't exhaust all retries
     double BKEpsRel=1e-4;
-    double BKLimit=1e6;
+    size_t BKLimit=2000;     // max QAGS subintervals (~35 used in practice)
 
     double NaNLimit= 1e-25;
     double BKClipTol=1e-25;
@@ -129,9 +184,19 @@ namespace BK{
     double getY(int iY){return iY*dY;}
 
     double  alphaS(double r, BKParameters &BKP){
+        if (BKP.aSType == CouplingType::Frozen) {
+            double L = log(4*BKP.C2*pow(r*BKP.Lambda, -2.0));
+            if (L <= 0.0) return BKP.alpha_freeze;   // beyond the Landau pole
+            return std::min((4*M_PI)/(beta0*L), BKP.alpha_freeze);
+        }
         double IR = BKP.mu2*BKP.C2 *pow(BKP.Lambda,-2.);
         double UV = 4*BKP.C2*pow(r*BKP.Lambda, -2.0);
         return (4*M_PI) / (beta0*BKP.zeta* log (  pow(IR, 1.0/BKP.zeta)  + pow(UV, 1.0/BKP.zeta) ) )  ;
+    }
+
+    // Kernel vector magnitude m K1(m x); tends to 1/x for m -> 0 (massless kernel)
+    double mK1(double x, BKParameters &BKP){
+        return (BKP.mp > 0.0) ? BKP.mp*gsl_sf_bessel_K1(BKP.mp*x) : 1.0/x;
     }
 
     // Here come the kernels 
@@ -139,9 +204,9 @@ namespace BK{
         //Normal Leading Order Kernel, AlphaS is fixed 
         double xdotz=r*rp*cos(phi) ;
         double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double kernel_sum = pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp),2.0);
-        kernel_sum +=  pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2),2.0);
-        kernel_sum +=  2*( BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp)  ) * (BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2)) * (xdotz-rp*rp)/(rp*x2); 
+        double kernel_sum = pow(mK1(rp,BKP),2.0);
+        kernel_sum +=  pow(mK1(x2,BKP),2.0);
+        kernel_sum +=  2*( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
         return pref*alpha_S*kernel_sum;
     }
 
@@ -152,18 +217,18 @@ namespace BK{
         double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
         double aSz=alphaS(rp,BKP);
         double aSx2=alphaS(x2,BKP);
-        double kernel_sum =  aSz*pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp),2.0);
-        kernel_sum += aSx2 * pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2),2.0);
-        kernel_sum += 2*sqrt( aSx2 * aSz) * ( BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp)  ) * (BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2)) * (xdotz-rp*rp)/(rp*x2); 
+        double kernel_sum =  aSz*pow(mK1(rp,BKP),2.0);
+        kernel_sum += aSx2 * pow(mK1(x2,BKP),2.0);
+        kernel_sum += 2*sqrt( aSx2 * aSz) * ( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
         return pref*kernel_sum; 
     }
 
     double rcKParent(double r, double rp, double phi, BKParameters &BKP){
         double xdotz=r*rp*cos(phi) ;
         double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double kernel_sum = pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp),2.0);
-        kernel_sum +=  pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2),2.0);
-        kernel_sum +=  2*( BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp)  ) * (BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2)) * (xdotz-rp*rp)/(rp*x2); 
+        double kernel_sum = pow(mK1(rp,BKP),2.0);
+        kernel_sum +=  pow(mK1(x2,BKP),2.0);
+        kernel_sum +=  2*( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
         return pref*alphaS(r,BKP)*kernel_sum; 
     }
 
@@ -171,9 +236,9 @@ namespace BK{
         double xdotz=r*rp*cos(phi) ;
         double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
         double alphaS_smallest=alphaS(std::min(r, std::min(rp, x2)),BKP);
-        double kernel_sum = pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp),2.0);
-        kernel_sum +=  pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2),2.0);
-        kernel_sum +=  2*( BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp)  ) * (BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2)) * (xdotz-rp*rp)/(rp*x2); 
+        double kernel_sum = pow(mK1(rp,BKP),2.0);
+        kernel_sum +=  pow(mK1(x2,BKP),2.0);
+        kernel_sum +=  2*( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
         return pref*alphaS_smallest * kernel_sum; 
     }
 
@@ -183,8 +248,8 @@ namespace BK{
         double aSx = alphaS(r,BKP);
         double aSz=alphaS(rp,BKP);
         double aSx2=alphaS(x2,BKP);
-        double kernel_sum = pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *rp),2.0) *(aSz/aSx2 -1.0);
-        kernel_sum +=  pow(BKP.mp * gsl_sf_bessel_K1(BKP.mp *x2),2.0) * (aSx2/aSz -1.0);
+        double kernel_sum = pow(mK1(rp,BKP),2.0) *(aSz/aSx2 -1.0);
+        kernel_sum +=  pow(mK1(x2,BKP),2.0) * (aSx2/aSz -1.0);
    
         return rcKParent(r, rp, phi, BKP) + pref * aSx * kernel_sum; 
     }
@@ -209,7 +274,8 @@ namespace BK{
             Kernel= rcKBalitsky(r, rp, phi,BKP);
             break;
         default:
-            break;
+            std::cerr << "[BK-ERROR]: unknown KernelType in EvaluateKernel" << std::endl;
+            exit(EXIT_FAILURE);
         }
         return Kernel;
     }
@@ -278,7 +344,12 @@ namespace BK{
                 if (status) { 
                     status = gsl_integration_qags (&F, 0.0,  uMax, BKEpsAbs,1e-2, BKLimit ,w, &result, &error);
                     if (status) {
-                        std::cerr << "[BK-ERROR]: integration failure! status = " << gsl_strerror (status )<< ". " << result << "+_" << error << std::endl; exit(EXIT_FAILURE);
+                        if (error <= 10*BKEpsAbs) {   // RHS at round-off level (e.g. S~0 near rmax): accept
+                            std::cerr << "\n[BK-WARNING]: QAGS: " << gsl_strerror(status) << " at r=" << bkpars.r
+                                      << ", accepted (|err|=" << error << " <= 10*BKEpsAbs). Result = " << result << std::endl;
+                        } else {
+                            std::cerr << "[BK-ERROR]: integration failure! status = " << gsl_strerror (status )<< " at r=" << bkpars.r << ". " << result << "+_" << error << std::endl; exit(EXIT_FAILURE);
+                        }
                     }else {
                         std::cerr << "[BK-ERROR]: reduced relative and absolute error (1e-2) integration. Result = " << result << "+-" << error <<std::endl;
                     }
@@ -289,7 +360,7 @@ namespace BK{
 
    // Check status of integration and reduce accuracy if failing
             if (result!=result){
-                std::cerr  << "[BK-ERROR]: Found NaN at " << bkpars.r  <<"\t" << std::endl; exit(0);  
+                std::cerr  << "[BK-ERROR]: Found NaN at " << bkpars.r  <<"\t" << std::endl; exit(EXIT_FAILURE);  
             }
 
     }
@@ -306,10 +377,10 @@ namespace BK{
         std::vector<double> k3(S->getNr());
         std::vector<double> k4(S->getNr());
 
-        BKParameters BKPars={BKProxy.Lambda,BKProxy.mu2,BKProxy.C2,BKProxy.zeta,BKProxy.mp,BKProxy.KType,BKProxy.r,S};
-        BKParameters BKPars1={BKProxy.Lambda,BKProxy.mu2,BKProxy.C2,BKProxy.zeta,BKProxy.mp,BKProxy.KType,BKProxy.r,S1};
-        BKParameters BKPars2={BKProxy.Lambda,BKProxy.mu2,BKProxy.C2,BKProxy.zeta,BKProxy.mp,BKProxy.KType,BKProxy.r,S2};
-        BKParameters BKPars3={BKProxy.Lambda,BKProxy.mu2,BKProxy.C2,BKProxy.zeta,BKProxy.mp,BKProxy.KType,BKProxy.r,S3};
+        BKParameters BKPars=BKProxy; BKPars.Dip=S;   // copy all fields, then point to this RK4 stage
+        BKParameters BKPars1=BKProxy; BKPars1.Dip=S1;   // copy all fields, then point to this RK4 stage
+        BKParameters BKPars2=BKProxy; BKPars2.Dip=S2;   // copy all fields, then point to this RK4 stage
+        BKParameters BKPars3=BKProxy; BKPars3.Dip=S3;   // copy all fields, then point to this RK4 stage
 
         std::vector<double> S_proxy (S->getNr());
         double res,err;
@@ -412,6 +483,11 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
 
     if(no_handlebars){gsl_set_error_handler_off();}
     dY=grid.getdY();
+    // T must be strictly positive (T=0 means S=1, add it by hand in post-processing)
+    if (grid.getTmin() <= 0.0) {
+        std::cerr << "[BK-ERROR]: Tmin = " << grid.getTmin() << " fm^-2. T must be > 0 (add T=0, S=1 by hand)." << std::endl;
+        exit(EXIT_FAILURE);
+    }
     //Here we write out the config file
     findFolder(PATH);
     std::ofstream config_f;
@@ -424,11 +500,18 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
     config_f << "    LambdaQCD: " << LQCD << " # GeV \n"; // GeV
     config_f << std::endl;
     config_f << "MV-Parameters:\n";
-    config_f << "    Qs02:   " << MVp.Qs02 * fmm2_to_GeV2 << " # GeV^2\n"; // GeV
-    config_f << "    gamma:  " << MVp.gamma<< "\n";
-    config_f << "    Lambda: " << MVp.Lambda * fmm1_to_GeV<< " # GeV \n";// GeV
-    config_f << "    sigma0: " << MVp.sigma0 << "\n";
-    config_f << "    ec:     " << MVp.ec<< "\n";
+    if (MVp.IC == ICType::MVReg) {
+        config_f << "    IC:     MV-Regulated\n";
+        config_f << "    kappa:  " << MVp.kappa << "\n";
+        config_f << "    m_IC:   " << MVp.m_IC * fmm1_to_GeV << " # GeV \n";
+    } else {
+        config_f << "    IC:     MV-Logarithm\n";
+        config_f << "    Qs02:   " << MVp.Qs02 * fmm2_to_GeV2 << " # GeV^2\n"; // GeV
+        config_f << "    gamma:  " << MVp.gamma<< "\n";
+        config_f << "    Lambda: " << MVp.Lambda * fmm1_to_GeV<< " # GeV \n";// GeV
+        config_f << "    sigma0: " << MVp.sigma0 << "\n";
+        config_f << "    ec:     " << MVp.ec<< "\n";
+    }
     config_f << std::endl;
     config_f << "BK-Parameters:\n";
     config_f << "    Lambda: " << BKp.Lambda * fmm1_to_GeV<<" # GeV \n";
@@ -452,9 +535,14 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
         config_f << "    Ktype:  Balitsky \n";break;
     default:
         std::cerr<< "[ERROR] KType not found!";
-        exit(0);
+        exit(EXIT_FAILURE);
         break;
     }
+    if (BKp.aSType == CouplingType::Frozen)
+        config_f << "    Coupling: Frozen \n    alpha_freeze: " << BKp.alpha_freeze << "  # mu2, zeta not used\n";
+    else
+        config_f << "    Coupling: Smooth \n";
+    config_f << "    Adjoint: " << (BKp.Adjoint == AdjointType::Squared ? "Squared" : "Casimir") << "\n";
     config_f << std::endl;
     config_f << grid.write_out_config();
     config_f << std::endl;
@@ -466,11 +554,13 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
     std::ostringstream qs2_f_name;
     qs2_f_name << PATH<< "/mv_Q2.dat";
     qs2_f.open (qs2_f_name.str());
-    
+    qs2_f << std::setprecision(12);
+
     std::ofstream dipole_f;
     std::ostringstream dipole_f_name;
     dipole_f_name << PATH<< "/mv_dipoles.dat";
     dipole_f.open (dipole_f_name.str());
+    dipole_f << std::setprecision(12);
 
     Dipole * SF = new Dipole();
     Dipole * SF1 = new Dipole();
@@ -481,76 +571,66 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
     for (size_t iT = 0; iT < grid.getNT(); iT++)
     {
         // Create the dipoles in fundamental and adjoint reps + the proxies. 
-        double Ti = grid. T_at(iT);
-        if(Ti>0){
+        double Ti = grid. T_at(iT);   // Ti > 0 guaranteed by the Tmin check above
 
-            MVp.T=Ti;
+        MVp.T=Ti;
 
-            SF->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            SF1->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            SF2->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            SF3->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            
-            // Adjoint 
-            SA->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            // Dipole * SA1 = new Dipole(); SA1->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            // Dipole * SA2 = new Dipole(); SA2->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            // Dipole * SA3 = new Dipole(); SA3->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        SF->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        SF1->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        SF2->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        SF3->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
 
-            for (size_t iY = 0; iY < grid.getNY(); iY++)
-            {
-                /* Here goes the evolution with respect to Y */
-                double Y=BK::getY(iY);
-                if(iY>0) BK::make_one_step(BKp,SF,SF1,SF2,SF3);
-                // if(iY>0) BK::make_one_step(BKp,SA,SA1,SA2,SA3);
-                /* After step goes the extraction of Qs */
-                double rSA, Qs2A;
-                double rSF, Qs2F;
-                std::vector<double> SA_proxy (SA->getNr());
-                for (size_t ir = 0; ir < SA->getNr(); ir++){SA_proxy[ir] = pow(SF->S_at(ir),CA/CF);}
-                SA->evolve_dipole(SA_proxy);
-            
-                
-                SA->find_effective_saturation_scale(rSA, Qs2A , std::exp(-0.5),1e-5, 10000);
-                SF->find_effective_saturation_scale(rSF, Qs2F , std::exp(-0.5),1e-5, 10000);
-                                                   
-                qs2_f << Ti << "\t"<< Y << "\t" << Qs2F*fmm2_to_GeV2 << "\t" << Qs2A*fmm2_to_GeV2  << std::endl;
+        // Adjoint
+        SA->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        // Dipole * SA1 = new Dipole(); SA1->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        // Dipole * SA2 = new Dipole(); SA2->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
+        // Dipole * SA3 = new Dipole(); SA3->init_MVA(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
 
-                /* And output to general array */
-                for (size_t ir = 0; ir < SF->getNr(); ir++){ 
-                    dipole_f << Ti << "\t"<< Y << "\t" <<  SF->r_at(ir) << "\t" << SF->S_at(ir)<< "\t" << SA->S_at(ir) <<std::endl ;
-                }
-                // Now some output
-                if (Verbose && iY%2 ==0){   
-                    double percentage_done1 = double(iT)/double(grid.getNT());
-                    double percentage_done2 = double(iY)/double(grid.getNY());
-                    Output::printProgress2(percentage_done1,percentage_done2);
-                }
-                
+        for (size_t iY = 0; iY < grid.getNY(); iY++)
+        {
+            /* Here goes the evolution with respect to Y */
+            double Y=grid.Y_at(iY);
+            if(iY>0) BK::make_one_step(BKp,SF,SF1,SF2,SF3);
+            // if(iY>0) BK::make_one_step(BKp,SA,SA1,SA2,SA3);
+            /* After step goes the extraction of Qs */
+            double rSA = 0.0, Qs2A = 0.0;
+            double rSF = 0.0, Qs2F = 0.0;
+            // Adjoint from the fundamental dipole, also at Y=0
+            double adj_pow = (BKp.Adjoint == AdjointType::Squared) ? 2.0 : CA/CF;
+            std::vector<double> SA_proxy (SA->getNr());
+            for (size_t ir = 0; ir < SA->getNr(); ir++){SA_proxy[ir] = pow(SF->S_at(ir),adj_pow);}
+            SA->evolve_dipole(SA_proxy);
+
+
+            if (!SA->find_effective_saturation_scale(rSA, Qs2A , std::exp(-0.5),1e-5, 10000))
+                std::cerr << "\n[BK-WARNING]: no adjoint Qs crossing on r-grid at T=" << Ti << " Y=" << Y << std::endl;
+            if (!SF->find_effective_saturation_scale(rSF, Qs2F , std::exp(-0.5),1e-5, 10000))
+                std::cerr << "\n[BK-WARNING]: no fundamental Qs crossing on r-grid at T=" << Ti << " Y=" << Y << std::endl;
+
+            qs2_f << Ti << "\t"<< Y << "\t" << Qs2F*fmm2_to_GeV2 << "\t" << Qs2A*fmm2_to_GeV2  << std::endl;
+
+            /* And output to general array */
+            for (size_t ir = 0; ir < SF->getNr(); ir++){
+                dipole_f << Ti << "\t"<< Y << "\t" <<  SF->r_at(ir) << "\t" << SF->S_at(ir)<< "\t" << SA->S_at(ir) <<std::endl ;
             }
-        }
-        else{
-            Dipole * SF = new Dipole(); SF->init_MV(grid.getNr(), grid.getrmax(), grid.getrmin(), MVp);
-            for (size_t iY = 0; iY < grid.getNY(); iY++)
-            {
-                double Y=BK::getY(iY);
-                for (size_t ir = 0; ir < SF->getNr(); ir++){ 
-                    dipole_f << 0.0 << "\t"<< Y << "\t" <<  SF->r_at(ir) << "\t" << 0.0<< "\t" << 0.0 <<std::endl ;
-                }
-                qs2_f << 0.0 << "\t"<< Y << "\t" << 0.0 << "\t" << 0.0  << std::endl;
+            // Now some output
+            if (Verbose && iY%2 ==0){
+                double percentage_done1 = double(iT)/double(grid.getNT());
+                double percentage_done2 = double(iY)/double(grid.getNY());
+                Output::printProgress2(percentage_done1,percentage_done2);
             }
+
         }
-        
     }
     qs2_f.close();
     dipole_f.close();
 
-    SF->clear();
-    SF1->clear();
-    SF2->clear();
-    SF3->clear();
-
-    SA->clear();
+    // The destructor frees the GSL objects (clear() alone left the Dipoles allocated)
+    delete SF;
+    delete SF1;
+    delete SF2;
+    delete SF3;
+    delete SA;
     // SA1->clear();
     // SA2->clear();
     // SA3->clear();

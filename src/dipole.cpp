@@ -53,6 +53,7 @@ Dipole& Dipole::operator=(Dipole&& other) noexcept {
     if (this != &other) {
         free_gsl();
         r_vec_ = std::move(other.r_vec_);
+        q_vec_ = std::move(other.q_vec_);
         S_vec_ = std::move(other.S_vec_);
         acc_ = other.acc_;
         spline_ = other.spline_;
@@ -168,7 +169,12 @@ double Dipole::eval(double r_query) const {
         throw std::invalid_argument("r_query must be > 0 for log interpolation.");
 
     double xq = std::log(r_query/r_vec_.front());
-    if (xq <= q_vec_.front()) return S_vec_.front();
+    // Below rmin: N = 1-S scales as r^2 (color transparency), so S -> 1 as r -> 0.
+    // A flat extrapolation S(r<rmin)=S(rmin) makes the 1/x2^2 kernel region log-divergent.
+    if (xq <= q_vec_.front()) {
+        double t = r_query/r_vec_.front();
+        return 1.0 - (1.0 - S_vec_.front())*t*t;
+    }
     if (xq >= q_vec_.back()) return S_vec_.back();
     if (!spline_ || !acc_)
         throw std::runtime_error("Interpolator not built. Call init/rebuildInterpolator first.");

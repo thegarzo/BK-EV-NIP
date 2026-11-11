@@ -1,12 +1,9 @@
-FFTW_INC=/usr/local/include
-FFTW_DIR=/usr/local/lib
-
 CXX           = g++
-CXXFLAGS      = -std=c++17 -Wall -fPIC -O3 -I/opt/homebrew/include/eigen3
+CXXFLAGS      = -std=c++17 -Wall -fPIC -O3 `gsl-config --cflags`
 LD            = g++
 LDFLAGS       = -O3
 
-LIBS          =  -I/usr/local/include -L/usr/local/lib -I${FFTW_INC} -L${FFTW_DIR} -lgsl -lgslcblas -lcuba -lm `lhapdf-config --cflags --ldflags` -lfftw3
+LIBS          = `gsl-config --libs`
 
 BUILD = $(PWD)/build
 MCDIP = $(PWD)

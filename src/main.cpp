@@ -40,14 +40,22 @@ int main() {
     BKAux::fill_in_all();
 
     // Basic MV according to PRD 88, 114020 (2013)
-    PARS = BKAux::MVPars;
-    BKPars = BKAux::BK_MV;
+    // PARS = BKAux::MVPars;
+    // BKPars = BKAux::BK_MV;
     // MVgamma according to PRD 88, 114020 (2013)
     // PARS = BKAux::MVgPars;
     // BKPars = BKAux::BK_MVg;
     // MVe according to PRD 88, 114020 (2013)
     // PARS = BKAux::MVePars;
     // BKPars = BKAux::BK_MVe;
+    // MV, MVgamma, MVe with the evolution used in the fits of PRD 88, 114020 (2013)
+    // (massless kernel, Balitsky rc, alpha_s frozen at 0.7, SA = SF^2)
+    // PARS = BKAux::MVPars;   BKPars = BKAux::BK_MV_Fit;
+    // PARS = BKAux::MVgPars;  BKPars = BKAux::BK_MVg_Fit;
+    // PARS = BKAux::MVePars;  BKPars = BKAux::BK_MVe_Fit;
+    // MV with IR regulator according to PRD 111, 054033 (2025)
+    PARS = BKAux::MVRegPars;
+    BKPars = BKAux::BK_MVReg;
     std::cerr<< "[ main ]: Parameters Set! " <<std::endl;
 
     double Ymin=0;double Ymax=12;

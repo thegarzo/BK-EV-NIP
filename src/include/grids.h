@@ -2,6 +2,9 @@
 #define GRIDS_H
 #include <complex>
 #include <cmath>
+#include <iostream>
+#include <sstream>
+#include <string>
 
 
 class Grids
@@ -52,11 +55,11 @@ private:
     double dT_;
 };
 
-Grids::Grids(/* args */)
+inline Grids::Grids(/* args */)
 {
 }
 
-Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax){
+inline Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax){
     Nr_=Nr;
     rmin_=rmin;
     rmax_=rmax;
@@ -64,16 +67,16 @@ Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int N
     NY_=NY;
     Ymin_=Ymin;
     Ymax_=Ymax; 
-    dY_ = (Ymax-Ymin)/(NY-1.);
+    dY_ = (NY > 1) ? (Ymax-Ymin)/(NY-1.) : 0.0;   // NY=1: initial condition only
     // T
     NT_=NT;
     Tmin_=Tmin;
     Tmax_=Tmax; 
-    dT_ = (Tmax-Tmin)/(NT-1.);
+    dT_ = (NT > 1) ? (Tmax-Tmin)/(NT-1.) : 0.0;   // NT=1: single T = Tmin
     std::cerr<< "[ Grids ]: Grid created! " <<std::endl;
 }
 
-std::string Grids::write_out_config(){
+inline std::string Grids::write_out_config(){
     std::ostringstream config_str;
     config_str << "Grid:\n";
     config_str << "    r-grid:\n";
@@ -96,7 +99,7 @@ std::string Grids::write_out_config(){
 }
 
 
-Grids::~Grids()
+inline Grids::~Grids()
 {
 }
 
