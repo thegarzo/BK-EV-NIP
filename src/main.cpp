@@ -29,10 +29,14 @@ int main() {
     BKParameters BKPars;
     
 
-    // Lattice
-    double rmin = 0.001; // in fm 
+    // Lattice: r-grid written to mv_dipoles.dat (what McDipper sees)
+    double rmin = 0.001; // in fm
     double rmax = 10.0 ; // In fm !!
     int NR = 141;
+    // Buffer: NRbuf extra points with the same log spacing are evolved but not written (rmax_evol = 30.6 fm for 17),
+    // so the rmax edge of the BK integral stays outside r <= rmax (Claude/bk_ngc/)
+    int NRbuf = 17;
+    double rmax_evol = rmin*std::pow(rmax/rmin, (NR-1.+NRbuf)/(NR-1.));
   
     
     //Dyn values
@@ -64,7 +68,8 @@ int main() {
     double Tmin=0.1;double Tmax=10.0;
     int NT=100;
 
-    Grids GRID( NR, rmin,rmax, NY,Ymin, Ymax,NT, Tmin, Tmax); 
+    Grids GRID( NR+NRbuf, rmin,rmax_evol, NY,Ymin, Ymax,NT, Tmin, Tmax);
+    GRID.setNrOut(NR);
     std::cerr<< "[main]: Parameters Set! " <<std::endl;
     BK::RunModel("MV_new", GRID, PARS, BKPars );
    

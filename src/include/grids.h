@@ -15,6 +15,11 @@ public:
     ~Grids();
 
     int getNr(){return Nr_;}
+    // r-points written to mv_dipoles.dat: the first Nr_out of the Nr evolved points (default all).
+    // The remaining points are a buffer against the rmax edge (daughters beyond rmax are not integrated).
+    void setNrOut(int n){ Nr_out_ = (n > 0 && n < Nr_) ? n : Nr_; }
+    int getNrOut(){return Nr_out_;}
+    double getrmaxOut(){return rmin_*std::pow(rmax_/rmin_, (Nr_out_-1.)/(Nr_-1.));}  // grid node, log spacing
     int getNY(){return NY_;}
     int getNT(){return NT_;}
     
@@ -41,6 +46,7 @@ public:
 private:
     // r 
     int Nr_;
+    int Nr_out_;
     double rmin_;
     double rmax_; 
     // Y
@@ -63,6 +69,7 @@ inline Grids::Grids(/* args */)
 
 inline Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax,double x0){
     Nr_=Nr;
+    Nr_out_=Nr;
     rmin_=rmin;
     rmax_=rmax;
     // Y
@@ -83,10 +90,12 @@ inline std::string Grids::write_out_config(){
     std::ostringstream config_str;
     config_str << "Grid:\n";
     config_str << "    r-grid:\n";
-    config_str << "        Nr:   " << Nr_<<"\n";
+    config_str << "        Nr:   " << Nr_out_<<"\n";
     config_str << "        rmin: " << rmin_<<"# in fm \n";
-    config_str << "        rmax: " << rmax_<<"\n";
+    config_str << "        rmax: " << getrmaxOut()<<"\n";
     config_str << "        dr: Evolved in log-scale\n";
+    config_str << "        Nr_evolved:   " << Nr_<<"   # buffer: evolved up to rmax_evolved, written up to rmax\n";
+    config_str << "        rmax_evolved: " << rmax_<<"\n";
     config_str << "    Y-grid:\n";
     config_str << "        x0:   " << x0_<<"\n";
     config_str << "        NY:   " << NY_<<"\n";

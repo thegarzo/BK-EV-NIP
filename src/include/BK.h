@@ -167,7 +167,7 @@ namespace BKAux{
 namespace BK{
     double beta0 = (11*NC-2*NF)/3.0;
     double pref = NC/(2*M_PI*M_PI);
-    int nGC= 40;
+    int nGC= 200;   // angular nodes; 40 undersamples the small-daughter peak (width ~1/(m r)) at r >~ 2 fm (Claude/bk_ngc/)
     double wGC= 2*M_PI/nGC;
     double dY=0.1;
 
@@ -618,7 +618,7 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
             qs2_f << Ti << "\t"<< Y << "\t" << Qs2F*fmm2_to_GeV2 << "\t" << Qs2A*fmm2_to_GeV2  << std::endl;
 
             /* And output to general array */
-            for (size_t ir = 0; ir < SF->getNr(); ir++){
+            for (size_t ir = 0; ir < size_t(grid.getNrOut()); ir++){   // buffer points beyond rmax_out not written
                 dipole_f << Ti << "\t"<< Y << "\t" <<  SF->r_at(ir) << "\t" << SF->S_at(ir)<< "\t" << SA->S_at(ir) <<std::endl ;
             }
             // Now some output
