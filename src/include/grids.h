@@ -11,7 +11,7 @@ class Grids
 {
 public:
     Grids();
-    Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax);
+    Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax,double x0=0.01);
     ~Grids();
 
     int getNr(){return Nr_;}
@@ -29,6 +29,7 @@ public:
 
     double getdT(){return dT_;}
     double getdY(){return dY_;}
+    double getx0(){return x0_;}
 
     void setYskip(int yskip){YSkip_=yskip;}
 
@@ -47,6 +48,7 @@ private:
     double Ymin_;
     double Ymax_; 
     double dY_;
+    double x0_;     // x at Y = 0 (Y = ln(x0/x)); BK does not use it, it labels the Y grid for McDIPPER
     int YSkip_;
     // T
     int NT_;
@@ -59,7 +61,7 @@ inline Grids::Grids(/* args */)
 {
 }
 
-inline Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax){
+inline Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Ymax,int NT,double Tmin,double Tmax,double x0){
     Nr_=Nr;
     rmin_=rmin;
     rmax_=rmax;
@@ -68,6 +70,7 @@ inline Grids::Grids(int Nr,double rmin,double rmax,int NY,double Ymin,double Yma
     Ymin_=Ymin;
     Ymax_=Ymax; 
     dY_ = (NY > 1) ? (Ymax-Ymin)/(NY-1.) : 0.0;   // NY=1: initial condition only
+    x0_ = x0;
     // T
     NT_=NT;
     Tmin_=Tmin;
@@ -85,7 +88,7 @@ inline std::string Grids::write_out_config(){
     config_str << "        rmax: " << rmax_<<"\n";
     config_str << "        dr: Evolved in log-scale\n";
     config_str << "    Y-grid:\n";
-    config_str << "        x0:   " << 0.01<<"\n";
+    config_str << "        x0:   " << x0_<<"\n";
     config_str << "        NY:   " << NY_<<"\n";
     config_str << "        Ymin: " << Ymin_<<"\n";
     config_str << "        Ymax: " << Ymax_<<"\n";

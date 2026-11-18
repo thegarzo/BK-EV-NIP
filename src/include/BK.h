@@ -199,85 +199,67 @@ namespace BK{
         return (BKP.mp > 0.0) ? BKP.mp*gsl_sf_bessel_K1(BKP.mp*x) : 1.0/x;
     }
 
+    // Everything the kernels need at one (r, rp, phi) point. RHS_integrand fills the rp-dependent
+    // entries once per rp and the x2-dependent ones once per angle, so no Bessel function or
+    // alpha_s is evaluated twice.
+    struct KernelInput {
+        double r, rp, x2, xdotz;
+        double Krp, Kx2;           // mK1(rp), mK1(x2)
+        double aSr, aSrp, aSx2;    // alphaS(r), alphaS(rp), alphaS(x2) (only those the prescription uses)
+    };
+
+    // Does the prescription need alphaS(x2) at this point?
+    bool needs_aSx2(const KernelInput &k, BKParameters &BKP){
+        switch (BKP.KType) {
+        case KernelType::rcDaughter:
+        case KernelType::rcBalitsky: return true;
+        case KernelType::rcSmallest: return k.x2 < std::min(k.r, k.rp);
+        default:                     return false;
+        }
+    }
+
     // Here come the kernels 
-    double KLO(double r, double rp, double phi, BKParameters &BKP){
-        //Normal Leading Order Kernel, AlphaS is fixed 
-        double xdotz=r*rp*cos(phi) ;
-        double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double kernel_sum = pow(mK1(rp,BKP),2.0);
-        kernel_sum +=  pow(mK1(x2,BKP),2.0);
-        kernel_sum +=  2*( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
-        return pref*alpha_S*kernel_sum;
-    }
-
-
-    double rcKDaughter(double r, double rp, double phi, BKParameters &BKP){
-        //rcBK Leading Order Kernel, daughter dipoles set the scale 
-        double xdotz=r*rp*cos(phi) ;
-        double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double aSz=alphaS(rp,BKP);
-        double aSx2=alphaS(x2,BKP);
-        double kernel_sum =  aSz*pow(mK1(rp,BKP),2.0);
-        kernel_sum += aSx2 * pow(mK1(x2,BKP),2.0);
-        kernel_sum += 2*sqrt( aSx2 * aSz) * ( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
-        return pref*kernel_sum; 
-    }
-
-    double rcKParent(double r, double rp, double phi, BKParameters &BKP){
-        double xdotz=r*rp*cos(phi) ;
-        double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double kernel_sum = pow(mK1(rp,BKP),2.0);
-        kernel_sum +=  pow(mK1(x2,BKP),2.0);
-        kernel_sum +=  2*( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
-        return pref*alphaS(r,BKP)*kernel_sum; 
-    }
-
-    double rcKSmallest(double r, double rp, double phi, BKParameters &BKP){
-        double xdotz=r*rp*cos(phi) ;
-        double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double alphaS_smallest=alphaS(std::min(r, std::min(rp, x2)),BKP);
-        double kernel_sum = pow(mK1(rp,BKP),2.0);
-        kernel_sum +=  pow(mK1(x2,BKP),2.0);
-        kernel_sum +=  2*( mK1(rp,BKP)  ) * (mK1(x2,BKP)) * (xdotz-rp*rp)/(rp*x2); 
-        return pref*alphaS_smallest * kernel_sum; 
-    }
-
-    double rcKBalitsky(double r, double rp, double phi, BKParameters &BKP){
-        double xdotz=r*rp*cos(phi) ;
-        double x2 =sqrt(fabs(r*r + rp*rp -2*xdotz));
-        double aSx = alphaS(r,BKP);
-        double aSz=alphaS(rp,BKP);
-        double aSx2=alphaS(x2,BKP);
-        double kernel_sum = pow(mK1(rp,BKP),2.0) *(aSz/aSx2 -1.0);
-        kernel_sum +=  pow(mK1(x2,BKP),2.0) * (aSx2/aSz -1.0);
-   
-        return rcKParent(r, rp, phi, BKP) + pref * aSx * kernel_sum; 
-    }
-    
-    double EvaluateKernel(double r, double rp, double phi, BKParameters &BKP){
-        double Kernel;
+    double Kernel(const KernelInput &k, BKParameters &BKP){
+        double A = pow(k.Krp,2.0);
+        double B = pow(k.Kx2,2.0);
+        double cross = (k.xdotz-k.rp*k.rp)/(k.rp*k.x2);
+        double kernel_sum;
         switch (BKP.KType)
         {
-        case KernelType :: LO : 
-            Kernel= KLO(r, rp, phi,BKP);
-            break;
-        case KernelType ::rcParent : 
-            Kernel= rcKParent(r, rp, phi,BKP);
-            break;
-        case KernelType ::rcDaughter: 
-            Kernel= rcKDaughter(r, rp, phi,BKP);
-            break;
-        case KernelType ::rcSmallest: 
-            Kernel= rcKSmallest(r, rp, phi,BKP);
-            break;
-        case KernelType ::rcBalitsky: 
-            Kernel= rcKBalitsky(r, rp, phi,BKP);
-            break;
+        case KernelType::LO:            // Normal Leading Order Kernel, AlphaS is fixed
+            kernel_sum = A + B + 2*( k.Krp ) * (k.Kx2) * cross;
+            return pref*alpha_S*kernel_sum;
+        case KernelType::rcParent:
+            kernel_sum = A + B + 2*( k.Krp ) * (k.Kx2) * cross;
+            return pref*k.aSr*kernel_sum;
+        case KernelType::rcDaughter:    // daughter dipoles set the scale
+            kernel_sum = k.aSrp*A + k.aSx2*B + 2*sqrt( k.aSx2 * k.aSrp) * ( k.Krp ) * (k.Kx2) * cross;
+            return pref*kernel_sum;
+        case KernelType::rcSmallest: {  // alpha_s at min(r, rp, x2)
+            double aS = (k.x2 < std::min(k.r, k.rp)) ? k.aSx2 : ((k.rp <= k.r) ? k.aSrp : k.aSr);
+            kernel_sum = A + B + 2*( k.Krp ) * (k.Kx2) * cross;
+            return pref*aS*kernel_sum;
+        }
+        case KernelType::rcBalitsky: {  // [PRD 111, 054033, Eq. (26)]
+            double parent = pref*k.aSr*(A + B + 2*( k.Krp ) * (k.Kx2) * cross);
+            kernel_sum = A*(k.aSrp/k.aSx2 -1.0) + B*(k.aSx2/k.aSrp -1.0);
+            return parent + pref*k.aSr*kernel_sum;
+        }
         default:
-            std::cerr << "[BK-ERROR]: unknown KernelType in EvaluateKernel" << std::endl;
+            std::cerr << "[BK-ERROR]: unknown KernelType in Kernel" << std::endl;
             exit(EXIT_FAILURE);
         }
-        return Kernel;
+    }
+
+    // Kernel at a single point (used by Test_Kernels and for checks; the evolution uses RHS_integrand)
+    double EvaluateKernel(double r, double rp, double phi, BKParameters &BKP){
+        KernelInput k;
+        k.r = r; k.rp = rp;
+        k.xdotz = r*rp*cos(phi);
+        k.x2 = sqrt(fabs(r*r + rp*rp -2*k.xdotz));
+        k.Krp = mK1(rp,BKP);  k.Kx2 = mK1(k.x2,BKP);
+        k.aSr = alphaS(r,BKP); k.aSrp = alphaS(rp,BKP); k.aSx2 = alphaS(k.x2,BKP);
+        return Kernel(k, BKP);
     }
 
     void Test_Kernels(int Nr_t, double r_max_t, double r_min_t, double rp, double phi, BKParameters &BKP)
@@ -307,27 +289,36 @@ namespace BK{
     }
     
     double RHS_integrand (double u, void * params) {
-        BKParameters pars = *(BKParameters *) params;
-        // double x = exp(-pars.Y);
+        BKParameters &pars = *(BKParameters *) params;
         double Irrp=0.0;
         double rp =pars.Dip->r_min() *exp(u);
 
-        double phi_i, Wi, Ki,x2_i;
+        // rp-dependent quantities: once per call, not once per angle
+        KernelInput k;
+        k.r = pars.r; k.rp = rp;
+        k.Krp = mK1(rp,pars);
+        if (pars.KType != KernelType::LO) { k.aSr = alphaS(pars.r,pars); k.aSrp = alphaS(rp,pars); }
+        double Srp = pars.Dip->eval(rp);
+        double Sr  = pars.Dip->eval(pars.r);
+
+        double phi_i, Wi, Ki;
         // Here comes the Gauss-Chebyshev quadrature
         for (size_t i = 1; i <= nGC; i++)
         {
-            // get the angle 
+            // get the angle and the second daughter dipole (one definition of x2 for kernel and S)
             phi_i = (2.0*i-1.0)*M_PI/(2.0*nGC);
-            x2_i = sqrt( fabs( pow(pars.r ,2. ) + pow(rp,2.) - 2*rp* pars.r *cos(phi_i) ) );
+            k.xdotz = pars.r*rp*cos(phi_i);
+            k.x2 = sqrt(fabs(pars.r*pars.r + rp*rp -2*k.xdotz));
+            k.Kx2 = mK1(k.x2,pars);
+            if (needs_aSx2(k,pars)) k.aSx2 = alphaS(k.x2,pars);
             // get the kernel 
-            Ki = EvaluateKernel(pars.r, rp, phi_i, pars);   
+            Ki = Kernel(k, pars);
             // get the Dipoles 
-            Wi=( pars.Dip->eval(rp))*(pars.Dip->eval(x2_i) ) - pars.Dip->eval(pars.r);
+            Wi = Srp*( pars.Dip->eval(k.x2) ) - Sr;
             // Mix together
             Irrp+= Ki*Wi;
         }
         return  wGC*rp*rp*Irrp;
-        /////// RECHECK THE DEFINITION WITH Y/YBAR!
     }
 
     void RHS_integral (BKParameters &bkpars ,double &result,double &error ) {
@@ -336,17 +327,33 @@ namespace BK{
             F.params = &bkpars;
 
             double uMax= log(bkpars.Dip->r_max()/bkpars.Dip->r_min() );
+            // Absolute tolerance on the scale of the small, evolving quantity: S(r) where the dipole is black,
+            // N(r) = 1 - S(r) where it is dilute (dS/dY = -dN/dY). An error EpsRel*min(S,N) evolves either one
+            // with relative accuracy EpsRel. A purely relative tolerance cannot be met where the RHS crosses
+            // zero (positive and negative parts of the integrand cancel).
+            double Sr_ = bkpars.Dip->eval(bkpars.r);
+            double epsAbs = std::max(BKEpsAbs, BKEpsRel*std::min(Sr_, 1.0 - Sr_));
+            // Breakpoint at r' = r: after the angular integral the integrand jumps there (daughter pole
+            // 1/x2^2 times S(r')-S(r)); smoothed by the angular nodes into a ramp of width ~ r*pi/(2 nGC).
+            // At the grid ends (r = rmin or rmax) it would coincide with an endpoint: plain QAGS there.
+            double ur = log(bkpars.r/bkpars.Dip->r_min());
+            bool split = (ur > 1e-12) && (ur < uMax - 1e-12);
+            double pts[3] = {0.0, ur, uMax};
+            auto integrate = [&](double epsRel, gsl_integration_workspace * ws) {
+                return split ? gsl_integration_qagp (&F, pts, 3, epsAbs, epsRel, BKLimit, ws, &result, &error)
+                             : gsl_integration_qags (&F, 0.0, uMax, epsAbs, epsRel, BKLimit, ws, &result, &error);
+            };
 
             gsl_integration_workspace * w= gsl_integration_workspace_alloc (BKLimit);
-            int status = gsl_integration_qags (&F, 0.0, uMax, BKEpsAbs,BKEpsRel, BKLimit, w, &result, &error); 
+            int status = integrate(BKEpsRel, w);
             if (status) {
-                status = gsl_integration_qags (&F, 0.0,  uMax,BKEpsAbs,1e-3, BKLimit ,w, &result, &error);
-                if (status) { 
-                    status = gsl_integration_qags (&F, 0.0,  uMax, BKEpsAbs,1e-2, BKLimit ,w, &result, &error);
+                status = integrate(1e-3, w);
+                if (status) {
+                    status = integrate(1e-2, w);
                     if (status) {
-                        if (error <= 10*BKEpsAbs) {   // RHS at round-off level (e.g. S~0 near rmax): accept
+                        if (error <= 10*epsAbs) {   // RHS at round-off level (e.g. S~0 near rmax): accept
                             std::cerr << "\n[BK-WARNING]: QAGS: " << gsl_strerror(status) << " at r=" << bkpars.r
-                                      << ", accepted (|err|=" << error << " <= 10*BKEpsAbs). Result = " << result << std::endl;
+                                      << ", accepted (|err|=" << error << " <= 10*epsAbs). Result = " << result << std::endl;
                         } else {
                             std::cerr << "[BK-ERROR]: integration failure! status = " << gsl_strerror (status )<< " at r=" << bkpars.r << ". " << result << "+_" << error << std::endl; exit(EXIT_FAILURE);
                         }
@@ -497,7 +504,8 @@ void RunModel(std::string PATH, Grids grid, MV_parameters MVp, BKParameters BKp 
     config_f << "General:\n";
     config_f << "    Nc:        " << NC<< "\n";
     config_f << "    Nf:        " << NF<< "\n";
-    config_f << "    LambdaQCD: " << LQCD << " # GeV \n"; // GeV
+    config_f << "    LambdaQCD: " << BKp.Lambda * fmm1_to_GeV << " # GeV, Lambda in alpha_s (see BK-Parameters)\n";
+    config_f << "    LambdaEff: " << BKp.Lambda * fmm1_to_GeV / std::sqrt(BKp.C2) << " # GeV, Lambda/C: alpha_s depends on r only via 4/(r^2 LambdaEff^2)\n";
     config_f << std::endl;
     config_f << "MV-Parameters:\n";
     if (MVp.IC == ICType::MVReg) {
