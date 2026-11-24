@@ -1,0 +1,8 @@
+# build output
+obj/
+compute
+
+# run output (default output folder of main.cpp)
+MV_new/
+
+.DS_Store
